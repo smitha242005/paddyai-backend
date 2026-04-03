@@ -11,16 +11,27 @@ import json
 import base64
 from PIL import Image
 import io
+import os
+import gdown
 
 app = Flask(__name__)
 CORS(app)
+
+# ── Auto Download Disease Model from Google Drive ──
+if not os.path.exists('disease_model.h5'):
+    print("Downloading disease model from Google Drive...")
+    gdown.download(
+        id='1XCBxp3hF69sTMS0pr2efn5PyfBkutZpe',
+        output='disease_model.h5',
+        quiet=False
+    )
+    print("✅ disease_model.h5 downloaded!")
 
 # ── Load Disease Model ──
 print("Loading disease model...")
 disease_model = tf.keras.models.load_model('disease_model.h5')
 with open('class_indices.json') as f:
     class_indices = json.load(f)
-# Reverse class indices
 classes = {v: k for k, v in class_indices.items()}
 print("✅ Disease model loaded!")
 print("Classes:", classes)
@@ -76,37 +87,37 @@ def predict_disease():
         # ── Disease Detection ──
         img = decode_image(data['image'])
         predictions = disease_model.predict(img)[0]
-        
+
         disease_classes = [
-            {'name': classes[i], 
-             'confidence': round(float(predictions[i]) * 100, 2),
-             'color': ['#f44336','#ff9800','#9c27b0'][i]}
+            {
+                'name': classes[i],
+                'confidence': round(float(predictions[i]) * 100, 2),
+                'color': ['#f44336','#ff9800','#9c27b0'][i]
+            }
             for i in range(len(classes))
         ]
         disease_classes.sort(key=lambda x: x['confidence'], reverse=True)
-        
+
         primary_disease = disease_classes[0]['name']
         primary_confidence = disease_classes[0]['confidence']
 
-        # Add Healthy if confidence is high enough
         if primary_confidence < 60:
             primary_disease = 'Healthy'
 
         # ── Yield Prediction ──
-        # Default values for prediction
         try:
             area_encoded = label_encoder.transform(['India'])[0]
         except:
             area_encoded = 0
-            
+
         yield_features = np.array([[
             area_encoded,
-            2024,        # year
-            1200.0,      # avg rainfall
-            121.0,       # pesticides
-            28.0         # avg temp
+            2024,
+            1200.0,
+            121.0,
+            28.0
         ]])
-        
+
         predicted_yield = yield_model.predict(yield_features)[0]
         yield_category = get_yield_category(predicted_yield)
         yield_tonnes = round(predicted_yield / 10000, 2)
