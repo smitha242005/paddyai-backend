@@ -11,39 +11,54 @@ import gdown
 
 app = Flask(__name__)
 
-# ── CORS: Allow your GitHub Pages frontend ──
+# ── CORS ──
 CORS(app, origins=[
     "https://smitha242005.github.io",
     "http://localhost:5500",
     "http://127.0.0.1:5500"
 ])
 
-# ── Auto Download disease_model.h5 from Google Drive ──
-DISEASE_MODEL_PATH = 'disease_model.h5'
-GDRIVE_FILE_ID = '1XCBxp3hF69sTMS0pr2efn5PyfBkutZpe'
+# ── Auto Download disease_model.tflite from Google Drive ──
+DISEASE_MODEL_PATH = 'disease_model.tflite'
+GDRIVE_FILE_ID = '1d15GXzkZu4z6ZZU3GaYP2yyQTWqOU3YM'
 
 if not os.path.exists(DISEASE_MODEL_PATH):
-    print("⬇️  Downloading disease_model.h5 from Google Drive...")
+    print("⬇️  Downloading disease_model.tflite from Google Drive...")
     try:
         gdown.download(
             id=GDRIVE_FILE_ID,
             output=DISEASE_MODEL_PATH,
             quiet=False
         )
-        print("✅ disease_model.h5 downloaded successfully!")
+        print("✅ disease_model.tflite downloaded successfully!")
     except Exception as e:
         print(f"❌ Failed to download disease model: {e}")
 
-# ── Load Disease Model (Keras .h5) ──
-disease_model = None
-try:
-    import tensorflow as tf
-    disease_model = tf.keras.models.load_model(DISEASE_MODEL_PATH)
-    print("✅ Disease model loaded!")
-except Exception as e:
-    print(f"⚠️  Disease model not loaded: {e}")
+# ── Load TFLite Disease Model ──
+interpreter = None
+input_details = None
+output_details = None
 
-# ── Load Yield Model ──
+try:
+    import tflite_runtime.interpreter as tflite
+    interpreter = tflite.Interpreter(model_path=DISEASE_MODEL_PATH)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    print("✅ TFLite disease model loaded!")
+except Exception as e:
+    print(f"⚠️  TFLite runtime not found, trying tensorflow: {e}")
+    try:
+        import tensorflow as tf
+        interpreter = tf.lite.Interpreter(model_path=DISEASE_MODEL_PATH)
+        interpreter.allocate_tensors()
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+        print("✅ TFLite disease model loaded via tensorflow!")
+    except Exception as e2:
+        print(f"❌ Disease model not loaded: {e2}")
+
+# ── Load Yield Models ──
 print("Loading yield & encoder models...")
 with open('yield_model.pkl', 'rb') as f:
     yield_model = pickle.load(f)
@@ -54,7 +69,7 @@ with open('yield_model_info.json') as f:
 with open('class_indices.json') as f:
     class_indices = json.load(f)
 
-# Reverse: {0: 'Bacterial leaf blight', 1: 'Brown spot', 2: 'Leaf smut'}
+# {0: 'Bacterial leaf blight', 1: 'Brown spot', 2: 'Leaf smut'}
 idx_to_class = {v: k for k, v in class_indices.items()}
 print("✅ All models loaded!")
 
@@ -90,15 +105,22 @@ def get_yield_category(yield_val):
     else:                    return 'Low'
 
 def preprocess_image(image_data_base64):
-    """Decode base64 image and preprocess for Keras model."""
+    """Decode base64 image and preprocess for TFLite model (128x128)."""
     if ',' in image_data_base64:
         image_data_base64 = image_data_base64.split(',')[1]
     image_bytes = base64.b64decode(image_data_base64)
     image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-    image = image.resize((224, 224))
-    img_array = np.array(image) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # (1, 224, 224, 3)
+    image = image.resize((128, 128))  # ← model expects 128x128
+    img_array = np.array(image, dtype=np.float32) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)  # (1, 128, 128, 3)
     return img_array
+
+def run_disease_prediction(img_array):
+    """Run TFLite inference."""
+    interpreter.set_tensor(input_details[0]['index'], img_array)
+    interpreter.invoke()
+    predictions = interpreter.get_tensor(output_details[0]['index'])[0]
+    return predictions
 
 # ── Routes ──
 
@@ -106,7 +128,7 @@ def preprocess_image(image_data_base64):
 def home():
     return jsonify({
         'status': '✅ PaddyAI Backend Running',
-        'disease_model': 'loaded' if disease_model else 'not loaded',
+        'disease_model': 'loaded' if interpreter else 'not loaded',
         'yield_model': 'loaded',
         'accuracy': {
             'disease': '81.25%',
@@ -119,7 +141,7 @@ def home():
 def health():
     return jsonify({
         'status': 'ok',
-        'disease_model_loaded': disease_model is not None,
+        'disease_model_loaded': interpreter is not None,
         'yield_model_loaded': True
     })
 
@@ -135,9 +157,9 @@ def predict_disease():
         primary_confidence = 99.0
         disease_classes_result = []
 
-        if disease_model:
+        if interpreter:
             img_array = preprocess_image(data['image'])
-            predictions = disease_model.predict(img_array)[0]  # shape: (3,)
+            predictions = run_disease_prediction(img_array)
 
             top_idx = int(np.argmax(predictions))
             primary_disease = idx_to_class.get(top_idx, 'Unknown')
