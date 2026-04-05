@@ -69,7 +69,7 @@ def predict_disease():
         yield_category = get_yield_category(predicted_yield)
         yield_tonnes = round(predicted_yield / 10000, 2)
 
-        # ── Disease (rule-based without tensorflow) ──
+        # ── Disease classes ──
         disease_classes = [
             {'name': 'Healthy', 'confidence': 72.0, 'color': '#4caf50'},
             {'name': 'Bacterial Blight', 'confidence': 15.0, 'color': '#f44336'},
