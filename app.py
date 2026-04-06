@@ -12,7 +12,9 @@ import tensorflow as tf
 
 app = Flask(__name__)
 
+# ============================================================
 # CORS
+# ============================================================
 CORS(app, origins=[
     "https://smitha242005.github.io",
     "http://localhost:5500",
@@ -20,28 +22,31 @@ CORS(app, origins=[
 ])
 
 # ============================================================
-# Download Disease Model File
+# Disease Weights Download
 # ============================================================
-DISEASE_MODEL_PATH = "disease_model_fixed.keras"
-GDRIVE_FILE_ID = "1eLQwu_VN1W0TWHtPYGij6fT7pjW5M1AI"
+WEIGHTS_FILE = "disease_weights.weights.h5"
+GDRIVE_FILE_ID = "1Gy9rg6uAYgTmT6CCK2qkiunE3BxZuaOp"
 
-if not os.path.exists(DISEASE_MODEL_PATH):
-    print("⬇️ Downloading disease model...")
+if not os.path.exists(WEIGHTS_FILE):
+    print("⬇️ Downloading disease weights...")
 
     try:
         gdown.download(
             id=GDRIVE_FILE_ID,
-            output=DISEASE_MODEL_PATH,
+            output=WEIGHTS_FILE,
             quiet=False,
             fuzzy=True
         )
 
-        if os.path.exists(DISEASE_MODEL_PATH):
-            size_mb = os.path.getsize(DISEASE_MODEL_PATH) / (1024 * 1024)
-            print(f"📁 Downloaded: {size_mb:.2f} MB")
+        if os.path.exists(WEIGHTS_FILE):
+            size_mb = os.path.getsize(WEIGHTS_FILE) / (1024 * 1024)
+            print(f"📁 Downloaded weights: {size_mb:.2f} MB")
+
+            if size_mb < 1:
+                raise Exception("Downloaded file too small")
 
     except Exception as e:
-        print(f"❌ Download failed: {e}")
+        print(f"❌ Failed to download weights: {e}")
 
 # ============================================================
 # Build Disease Model Manually
@@ -70,16 +75,20 @@ try:
     ])
 
     disease_model.build((None, 128, 128, 3))
-    disease_model.load_weights(DISEASE_MODEL_PATH)
 
-    print("✅ Disease model weights loaded successfully!")
+    if os.path.exists(WEIGHTS_FILE):
+        disease_model.load_weights(WEIGHTS_FILE)
+        print("✅ Disease model weights loaded successfully!")
+    else:
+        print("❌ Weights file not found")
+        disease_model = None
 
 except Exception as e:
-    print(f"❌ Failed to load disease model weights: {e}")
+    print(f"❌ Failed to build/load disease model: {e}")
     disease_model = None
 
 # ============================================================
-# Load Yield Model Files
+# Load Yield Prediction Files
 # ============================================================
 print("⬇️ Loading yield model files...")
 
@@ -100,7 +109,7 @@ idx_to_class = {v: k for k, v in class_indices.items()}
 print("✅ Yield model loaded!")
 
 # ============================================================
-# Disease Details
+# Disease Information
 # ============================================================
 DISEASE_INFO = {
     "Bacterial leaf blight": {
@@ -176,32 +185,31 @@ def predict_disease():
     try:
         data = request.get_json()
 
-        if "image" not in data:
+        if not data or "image" not in data:
             return jsonify({"error": "No image provided"}), 400
 
         if disease_model is None:
             return jsonify({"error": "Disease model not loaded"}), 500
 
         image_array = preprocess_image(data["image"])
-
         predictions = disease_model.predict(image_array, verbose=0)[0]
 
         top_index = int(np.argmax(predictions))
         disease_name = idx_to_class[top_index]
         confidence = round(float(predictions[top_index]) * 100, 2)
 
-        treatment = DISEASE_INFO.get(disease_name, {})
+        prediction_details = []
 
-        prediction_list = []
+        for i, value in enumerate(predictions):
+            class_name = idx_to_class[i]
 
-        for i, pred in enumerate(predictions):
-            name = idx_to_class[i]
-
-            prediction_list.append({
-                "name": name,
-                "confidence": round(float(pred) * 100, 2),
-                "color": DISEASE_INFO.get(name, {}).get("color", "#607d8b")
+            prediction_details.append({
+                "name": class_name,
+                "confidence": round(float(value) * 100, 2),
+                "color": DISEASE_INFO.get(class_name, {}).get("color", "#607d8b")
             })
+
+        treatment = DISEASE_INFO.get(disease_name, {})
 
         return jsonify({
             "disease": disease_name,
@@ -210,7 +218,7 @@ def predict_disease():
             "pesticide": treatment.get("pesticide", ""),
             "recovery": treatment.get("recovery", ""),
             "severity": treatment.get("severity", ""),
-            "predictions": prediction_list
+            "predictions": prediction_details
         })
 
     except Exception as e:
@@ -230,7 +238,7 @@ def predict_yield():
 
         try:
             area_encoded = label_encoder.transform([country])[0]
-        except:
+        except Exception:
             area_encoded = label_encoder.transform(["India"])[0]
 
         features = np.array([
