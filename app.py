@@ -19,8 +19,8 @@ CORS(app, origins=[
 ])
 
 # ── Auto Download disease_model.tflite from Google Drive ──
-DISEASE_MODEL_PATH = 'disease_model_v2.tflite'
-GDRIVE_FILE_ID = '1hdJ4335ahExg3joOMVReYurgQN7BDHjP'
+DISEASE_MODEL_PATH = 'disease_model_v3.tflite'
+GDRIVE_FILE_ID = '19A-Rgsn00lnCpytWzH52nLLnFcJAtdCk'
 
 if not os.path.exists(DISEASE_MODEL_PATH):
     print("⬇️  Downloading disease_model.tflite from Google Drive...")
