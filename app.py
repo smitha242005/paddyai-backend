@@ -12,25 +12,21 @@ import tensorflow as tf
 
 app = Flask(__name__)
 
-# ─────────────────────────────────────────────
 # CORS
-# ─────────────────────────────────────────────
 CORS(app, origins=[
     "https://smitha242005.github.io",
     "http://localhost:5500",
     "http://127.0.0.1:5500"
 ])
 
-# ─────────────────────────────────────────────
-# Disease Model Download + Load
-# ─────────────────────────────────────────────
+# ============================================================
+# Download Disease Model File
+# ============================================================
 DISEASE_MODEL_PATH = "disease_model_fixed.keras"
 GDRIVE_FILE_ID = "1eLQwu_VN1W0TWHtPYGij6fT7pjW5M1AI"
 
-disease_model = None
-
 if not os.path.exists(DISEASE_MODEL_PATH):
-    print("⬇️ Downloading disease model from Google Drive...")
+    print("⬇️ Downloading disease model...")
 
     try:
         gdown.download(
@@ -42,38 +38,49 @@ if not os.path.exists(DISEASE_MODEL_PATH):
 
         if os.path.exists(DISEASE_MODEL_PATH):
             size_mb = os.path.getsize(DISEASE_MODEL_PATH) / (1024 * 1024)
-            print(f"📁 Downloaded file size: {size_mb:.2f} MB")
-
-            if size_mb < 5:
-                print("❌ Download failed: file too small")
-                os.remove(DISEASE_MODEL_PATH)
-            else:
-                print("✅ Disease model downloaded successfully!")
+            print(f"📁 Downloaded: {size_mb:.2f} MB")
 
     except Exception as e:
-        print(f"❌ Error downloading disease model: {e}")
+        print(f"❌ Download failed: {e}")
 
-if os.path.exists(DISEASE_MODEL_PATH):
-    try:
-        print(f"TensorFlow version: {tf.__version__}")
+# ============================================================
+# Build Disease Model Manually
+# ============================================================
+disease_model = None
 
-        disease_model = tf.keras.models.load_model(
-            DISEASE_MODEL_PATH,
-            compile=False
-        )
+try:
+    disease_model = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(128, 128, 3)),
 
-        print("✅ Disease model loaded successfully!")
+        tf.keras.layers.Conv2D(32, (3, 3), activation="relu"),
+        tf.keras.layers.MaxPooling2D((2, 2)),
 
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"❌ Failed to load disease model: {e}")
-else:
-    print("❌ Disease model file not found")
+        tf.keras.layers.Conv2D(64, (3, 3), activation="relu"),
+        tf.keras.layers.MaxPooling2D((2, 2)),
 
-# ─────────────────────────────────────────────
-# Load Yield Prediction Files
-# ─────────────────────────────────────────────
+        tf.keras.layers.Conv2D(128, (3, 3), activation="relu"),
+        tf.keras.layers.MaxPooling2D((2, 2)),
+
+        tf.keras.layers.Flatten(),
+
+        tf.keras.layers.Dense(256, activation="relu"),
+        tf.keras.layers.Dropout(0.5),
+
+        tf.keras.layers.Dense(3, activation="softmax")
+    ])
+
+    disease_model.build((None, 128, 128, 3))
+    disease_model.load_weights(DISEASE_MODEL_PATH)
+
+    print("✅ Disease model weights loaded successfully!")
+
+except Exception as e:
+    print(f"❌ Failed to load disease model weights: {e}")
+    disease_model = None
+
+# ============================================================
+# Load Yield Model Files
+# ============================================================
 print("⬇️ Loading yield model files...")
 
 with open("yield_model.pkl", "rb") as f:
@@ -92,9 +99,9 @@ idx_to_class = {v: k for k, v in class_indices.items()}
 
 print("✅ Yield model loaded!")
 
-# ─────────────────────────────────────────────
-# Disease Information Database
-# ─────────────────────────────────────────────
+# ============================================================
+# Disease Details
+# ============================================================
 DISEASE_INFO = {
     "Bacterial leaf blight": {
         "medicine": "Streptomycin sulfate + Tetracycline (0.025%)",
@@ -119,22 +126,14 @@ DISEASE_INFO = {
     }
 }
 
-# ─────────────────────────────────────────────
+# ============================================================
 # Helper Functions
-# ─────────────────────────────────────────────
-def get_yield_category(predicted_yield):
-    if predicted_yield >= 50000:
-        return "High"
-    elif predicted_yield >= 30000:
-        return "Medium"
-    return "Low"
+# ============================================================
+def preprocess_image(image_data):
+    if "," in image_data:
+        image_data = image_data.split(",")[1]
 
-
-def preprocess_image(base64_image):
-    if "," in base64_image:
-        base64_image = base64_image.split(",")[1]
-
-    image_bytes = base64.b64decode(base64_image)
+    image_bytes = base64.b64decode(image_data)
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize((128, 128))
 
@@ -143,28 +142,27 @@ def preprocess_image(base64_image):
 
     return image_array
 
-# ─────────────────────────────────────────────
+
+def get_yield_category(value):
+    if value >= 50000:
+        return "High"
+    elif value >= 30000:
+        return "Medium"
+    return "Low"
+
+# ============================================================
 # Routes
-# ─────────────────────────────────────────────
-@app.route("/", methods=["GET"])
+# ============================================================
+@app.route("/")
 def home():
     return jsonify({
-        "status": "✅ PaddyAI Backend Running",
+        "status": "running",
         "disease_model_loaded": disease_model is not None,
-        "yield_model_loaded": True,
-        "accuracy": {
-            "disease_model": "81.25%",
-            "yield_model": f"{round(yield_info['r2_score'] * 100, 2)}%"
-        },
-        "endpoints": [
-            "/health",
-            "/predict/disease",
-            "/predict/yield"
-        ]
+        "yield_model_loaded": True
     })
 
 
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
     return jsonify({
         "status": "ok",
@@ -178,54 +176,45 @@ def predict_disease():
     try:
         data = request.get_json()
 
-        if not data or "image" not in data:
+        if "image" not in data:
             return jsonify({"error": "No image provided"}), 400
+
+        if disease_model is None:
+            return jsonify({"error": "Disease model not loaded"}), 500
 
         image_array = preprocess_image(data["image"])
 
-        primary_disease = "Unknown"
-        confidence = 0.0
-        all_predictions = []
+        predictions = disease_model.predict(image_array, verbose=0)[0]
 
-        if disease_model is not None:
-            predictions = disease_model.predict(image_array, verbose=0)[0]
+        top_index = int(np.argmax(predictions))
+        disease_name = idx_to_class[top_index]
+        confidence = round(float(predictions[top_index]) * 100, 2)
 
-            top_index = int(np.argmax(predictions))
-            primary_disease = idx_to_class[top_index]
-            confidence = round(float(predictions[top_index]) * 100, 2)
+        treatment = DISEASE_INFO.get(disease_name, {})
 
-            for i, pred in enumerate(predictions):
-                disease_name = idx_to_class[i]
+        prediction_list = []
 
-                all_predictions.append({
-                    "name": disease_name,
-                    "confidence": round(float(pred) * 100, 2),
-                    "color": DISEASE_INFO[disease_name]["color"]
-                })
+        for i, pred in enumerate(predictions):
+            name = idx_to_class[i]
 
-        else:
-            return jsonify({
-                "error": "Disease model not loaded"
-            }), 500
-
-        treatment = DISEASE_INFO.get(primary_disease, {})
+            prediction_list.append({
+                "name": name,
+                "confidence": round(float(pred) * 100, 2),
+                "color": DISEASE_INFO.get(name, {}).get("color", "#607d8b")
+            })
 
         return jsonify({
-            "disease": primary_disease,
+            "disease": disease_name,
             "confidence": confidence,
             "medicine": treatment.get("medicine", ""),
             "pesticide": treatment.get("pesticide", ""),
             "recovery": treatment.get("recovery", ""),
             "severity": treatment.get("severity", ""),
-            "predictions": all_predictions
+            "predictions": prediction_list
         })
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/predict/yield", methods=["POST"])
@@ -241,7 +230,7 @@ def predict_yield():
 
         try:
             area_encoded = label_encoder.transform([country])[0]
-        except Exception:
+        except:
             area_encoded = label_encoder.transform(["India"])[0]
 
         features = np.array([
@@ -249,22 +238,15 @@ def predict_yield():
         ])
 
         predicted_yield = float(yield_model.predict(features)[0])
-        yield_tonnes = round(predicted_yield / 10000, 2)
-        category = get_yield_category(predicted_yield)
 
         return jsonify({
-            "country": country,
-            "predictedYield": f"{yield_tonnes} t/ha",
-            "yieldCategory": category,
+            "predictedYield": round(predicted_yield / 10000, 2),
+            "yieldCategory": get_yield_category(predicted_yield),
             "confidence": round(yield_info["r2_score"] * 100, 2)
         })
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
