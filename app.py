@@ -28,20 +28,34 @@ if not os.path.exists(DISEASE_MODEL_PATH):
         gdown.download(
             id=GDRIVE_FILE_ID,
             output=DISEASE_MODEL_PATH,
-            quiet=False
+            quiet=False,
+            fuzzy=True        # handles Google's virus-scan warning page
         )
-        print("✅ disease_model.h5 downloaded successfully!")
+        # Verify it's actually the model and not an HTML error page
+        size_mb = os.path.getsize(DISEASE_MODEL_PATH) / (1024 * 1024)
+        print(f"📁 Downloaded file size: {size_mb:.1f} MB")
+        if size_mb < 10:
+            print("❌ File too small — bad download! Removing...")
+            os.remove(DISEASE_MODEL_PATH)
+        else:
+            print("✅ disease_model.h5 downloaded successfully!")
     except Exception as e:
         print(f"❌ Failed to download disease model: {e}")
 
-# ── Load Disease Model (.h5 directly) ──
+# ── Load Disease Model ──
 disease_model = None
-try:
-    import tensorflow as tf
-    disease_model = tf.keras.models.load_model(DISEASE_MODEL_PATH, compile=False)
-    print("✅ Disease model loaded!")
-except Exception as e:
-    print(f"❌ Disease model not loaded: {e}")
+if not os.path.exists(DISEASE_MODEL_PATH):
+    print("❌ Model file missing — skipping load")
+else:
+    try:
+        import tensorflow as tf
+        print(f"TF version: {tf.__version__}")
+        disease_model = tf.keras.models.load_model(DISEASE_MODEL_PATH, compile=False)
+        print("✅ Disease model loaded!")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Disease model not loaded: {e}")
 
 # ── Load Yield Models ──
 print("Loading yield & encoder models...")
@@ -130,7 +144,7 @@ def predict_disease():
         if not data or 'image' not in data:
             return jsonify({'error': 'No image provided'}), 400
 
-        # ── Real Disease Prediction ──
+        # ── Disease Prediction ──
         primary_disease = 'Healthy'
         primary_confidence = 99.0
         disease_classes_result = []
@@ -233,6 +247,8 @@ def predict_disease():
         })
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
@@ -264,6 +280,8 @@ def predict_yield():
         })
 
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
