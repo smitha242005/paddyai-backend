@@ -18,45 +18,30 @@ CORS(app, origins=[
     "http://127.0.0.1:5500"
 ])
 
-# ── Auto Download disease_model.tflite from Google Drive ──
-DISEASE_MODEL_PATH = 'disease_model_v3.tflite'
-GDRIVE_FILE_ID = '19A-Rgsn00lnCpytWzH52nLLnFcJAtdCk'
+# ── Auto Download disease_model.h5 from Google Drive ──
+DISEASE_MODEL_PATH = 'disease_model.h5'
+GDRIVE_FILE_ID = '1XCBxp3hF69sTMS0pr2efn5PyfBkutZpe'
 
 if not os.path.exists(DISEASE_MODEL_PATH):
-    print("⬇️  Downloading disease_model.tflite from Google Drive...")
+    print("⬇️  Downloading disease_model.h5 from Google Drive...")
     try:
         gdown.download(
             id=GDRIVE_FILE_ID,
             output=DISEASE_MODEL_PATH,
             quiet=False
         )
-        print("✅ disease_model.tflite downloaded successfully!")
+        print("✅ disease_model.h5 downloaded successfully!")
     except Exception as e:
         print(f"❌ Failed to download disease model: {e}")
 
-# ── Load TFLite Disease Model ──
-interpreter = None
-input_details = None
-output_details = None
-
+# ── Load Disease Model (.h5 directly) ──
+disease_model = None
 try:
-    import tflite_runtime.interpreter as tflite
-    interpreter = tflite.Interpreter(model_path=DISEASE_MODEL_PATH)
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-    print("✅ TFLite disease model loaded!")
+    import tensorflow as tf
+    disease_model = tf.keras.models.load_model(DISEASE_MODEL_PATH, compile=False)
+    print("✅ Disease model loaded!")
 except Exception as e:
-    print(f"⚠️  TFLite runtime not found, trying tensorflow: {e}")
-    try:
-        import tensorflow as tf
-        interpreter = tf.lite.Interpreter(model_path=DISEASE_MODEL_PATH)
-        interpreter.allocate_tensors()
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
-        print("✅ TFLite disease model loaded via tensorflow!")
-    except Exception as e2:
-        print(f"❌ Disease model not loaded: {e2}")
+    print(f"❌ Disease model not loaded: {e}")
 
 # ── Load Yield Models ──
 print("Loading yield & encoder models...")
@@ -105,22 +90,15 @@ def get_yield_category(yield_val):
     else:                    return 'Low'
 
 def preprocess_image(image_data_base64):
-    """Decode base64 image and preprocess for TFLite model (128x128)."""
+    """Decode base64 image and preprocess for model (128x128)."""
     if ',' in image_data_base64:
         image_data_base64 = image_data_base64.split(',')[1]
     image_bytes = base64.b64decode(image_data_base64)
     image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-    image = image.resize((128, 128))  # ← model expects 128x128
+    image = image.resize((128, 128))
     img_array = np.array(image, dtype=np.float32) / 255.0
     img_array = np.expand_dims(img_array, axis=0)  # (1, 128, 128, 3)
     return img_array
-
-def run_disease_prediction(img_array):
-    """Run TFLite inference."""
-    interpreter.set_tensor(input_details[0]['index'], img_array)
-    interpreter.invoke()
-    predictions = interpreter.get_tensor(output_details[0]['index'])[0]
-    return predictions
 
 # ── Routes ──
 
@@ -128,7 +106,7 @@ def run_disease_prediction(img_array):
 def home():
     return jsonify({
         'status': '✅ PaddyAI Backend Running',
-        'disease_model': 'loaded' if interpreter else 'not loaded',
+        'disease_model': 'loaded' if disease_model else 'not loaded',
         'yield_model': 'loaded',
         'accuracy': {
             'disease': '81.25%',
@@ -141,7 +119,7 @@ def home():
 def health():
     return jsonify({
         'status': 'ok',
-        'disease_model_loaded': interpreter is not None,
+        'disease_model_loaded': disease_model is not None,
         'yield_model_loaded': True
     })
 
@@ -157,9 +135,9 @@ def predict_disease():
         primary_confidence = 99.0
         disease_classes_result = []
 
-        if interpreter:
+        if disease_model:
             img_array = preprocess_image(data['image'])
-            predictions = run_disease_prediction(img_array)
+            predictions = disease_model.predict(img_array)[0]  # shape: (3,)
 
             top_idx = int(np.argmax(predictions))
             primary_disease = idx_to_class.get(top_idx, 'Unknown')
