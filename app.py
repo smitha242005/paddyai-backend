@@ -12,23 +12,18 @@ import tensorflow as tf
 
 app = Flask(__name__)
 
-# ============================================================
-# CORS
-# ============================================================
-CORS(app, origins=[
-    "https://smitha242005.github.io",
-    "http://localhost:5500",
-    "http://127.0.0.1:5500"
-])
+# Allow frontend access from GitHub Pages and local testing
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ============================================================
-# Disease Weights Download
+# Disease Model Weights Download
 # ============================================================
+
 WEIGHTS_FILE = "disease_weights.weights.h5"
 GDRIVE_FILE_ID = "1Gy9rg6uAYgTmT6CCK2qkiunE3BxZuaOp"
 
 if not os.path.exists(WEIGHTS_FILE):
-    print("⬇️ Downloading disease weights...")
+    print("Downloading disease model weights...")
 
     try:
         gdown.download(
@@ -38,19 +33,22 @@ if not os.path.exists(WEIGHTS_FILE):
             fuzzy=True
         )
 
-        if os.path.exists(WEIGHTS_FILE):
-            size_mb = os.path.getsize(WEIGHTS_FILE) / (1024 * 1024)
-            print(f"📁 Downloaded weights: {size_mb:.2f} MB")
+        if not os.path.exists(WEIGHTS_FILE):
+            raise Exception("Weights file not downloaded")
 
-            if size_mb < 1:
-                raise Exception("Downloaded file too small")
+        size_mb = os.path.getsize(WEIGHTS_FILE) / (1024 * 1024)
+        print(f"Weights downloaded: {size_mb:.2f} MB")
+
+        if size_mb < 1:
+            raise Exception("Downloaded file too small / invalid")
 
     except Exception as e:
-        print(f"❌ Failed to download weights: {e}")
+        print("Failed to download disease weights:", e)
 
 # ============================================================
-# Build Disease Model Manually
+# Build Disease CNN
 # ============================================================
+
 disease_model = None
 
 try:
@@ -78,19 +76,18 @@ try:
 
     if os.path.exists(WEIGHTS_FILE):
         disease_model.load_weights(WEIGHTS_FILE)
-        print("✅ Disease model weights loaded successfully!")
+        print("Disease model loaded successfully")
     else:
-        print("❌ Weights file not found")
+        print("Disease model weights file missing")
         disease_model = None
 
 except Exception as e:
-    print(f"❌ Failed to build/load disease model: {e}")
+    print("Failed to load disease model:", e)
     disease_model = None
 
 # ============================================================
-# Load Yield Prediction Files
+# Load Yield Model
 # ============================================================
-print("⬇️ Loading yield model files...")
 
 with open("yield_model.pkl", "rb") as f:
     yield_model = pickle.load(f)
@@ -106,38 +103,38 @@ with open("class_indices.json", "r") as f:
 
 idx_to_class = {v: k for k, v in class_indices.items()}
 
-print("✅ Yield model loaded!")
+# ============================================================
+# Disease Details
+# ============================================================
 
-# ============================================================
-# Disease Information
-# ============================================================
 DISEASE_INFO = {
     "Bacterial leaf blight": {
         "medicine": "Streptomycin sulfate + Tetracycline (0.025%)",
         "pesticide": "Copper oxychloride 50 WP @ 3g/L",
-        "recovery": "Drain field, apply potash fertilizer, avoid excess nitrogen",
+        "recovery": "Drain the field, apply potash fertilizer, avoid excess nitrogen",
         "severity": "High",
-        "color": "#f44336"
+        "color": "#ef4444"
     },
     "Brown spot": {
-        "medicine": "Mancozeb 75 WP @ 2.5g/L or Iprodione",
+        "medicine": "Mancozeb 75 WP @ 2.5g/L",
         "pesticide": "Propiconazole 25 EC @ 1ml/L",
-        "recovery": "Improve soil nutrition, apply potassium silicate",
+        "recovery": "Improve soil nutrition and apply potassium silicate",
         "severity": "Medium",
-        "color": "#ff9800"
+        "color": "#f59e0b"
     },
     "Leaf smut": {
         "medicine": "Carbendazim 50 WP @ 1g/L",
         "pesticide": "Tricyclazole 75 WP @ 0.6g/L",
-        "recovery": "Remove infected leaves, improve drainage",
+        "recovery": "Remove infected leaves and improve drainage",
         "severity": "Low",
-        "color": "#9c27b0"
+        "color": "#8b5cf6"
     }
 }
 
 # ============================================================
 # Helper Functions
 # ============================================================
+
 def preprocess_image(image_data):
     if "," in image_data:
         image_data = image_data.split(",")[1]
@@ -146,24 +143,25 @@ def preprocess_image(image_data):
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image = image.resize((128, 128))
 
-    image_array = np.array(image, dtype=np.float32) / 255.0
-    image_array = np.expand_dims(image_array, axis=0)
+    arr = np.array(image, dtype=np.float32) / 255.0
+    arr = np.expand_dims(arr, axis=0)
 
-    return image_array
+    return arr
 
 
-def get_yield_category(value):
-    if value >= 50000:
+def get_yield_category(y):
+    if y >= 50000:
         return "High"
-    elif value >= 30000:
+    elif y >= 30000:
         return "Medium"
     return "Low"
 
 # ============================================================
 # Routes
 # ============================================================
+
 @app.route("/")
-def home():
+def root():
     return jsonify({
         "status": "running",
         "disease_model_loaded": disease_model is not None,
@@ -180,8 +178,11 @@ def health():
     })
 
 
-@app.route("/predict/disease", methods=["POST"])
+@app.route("/predict/disease", methods=["POST", "OPTIONS"])
 def predict_disease():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
     try:
         data = request.get_json()
 
@@ -191,42 +192,45 @@ def predict_disease():
         if disease_model is None:
             return jsonify({"error": "Disease model not loaded"}), 500
 
-        image_array = preprocess_image(data["image"])
-        predictions = disease_model.predict(image_array, verbose=0)[0]
+        image = preprocess_image(data["image"])
 
-        top_index = int(np.argmax(predictions))
-        disease_name = idx_to_class[top_index]
-        confidence = round(float(predictions[top_index]) * 100, 2)
+        preds = disease_model.predict(image, verbose=0)[0]
 
-        prediction_details = []
+        top_index = int(np.argmax(preds))
+        disease = idx_to_class[top_index]
+        confidence = round(float(preds[top_index]) * 100, 2)
 
-        for i, value in enumerate(predictions):
-            class_name = idx_to_class[i]
+        disease_info = DISEASE_INFO.get(disease, {})
 
-            prediction_details.append({
-                "name": class_name,
-                "confidence": round(float(value) * 100, 2),
-                "color": DISEASE_INFO.get(class_name, {}).get("color", "#607d8b")
+        prediction_list = []
+
+        for i, p in enumerate(preds):
+            cls = idx_to_class[i]
+            prediction_list.append({
+                "name": cls,
+                "confidence": round(float(p) * 100, 2),
+                "color": DISEASE_INFO.get(cls, {}).get("color", "#6b7280")
             })
 
-        treatment = DISEASE_INFO.get(disease_name, {})
-
         return jsonify({
-            "disease": disease_name,
+            "disease": disease,
             "confidence": confidence,
-            "medicine": treatment.get("medicine", ""),
-            "pesticide": treatment.get("pesticide", ""),
-            "recovery": treatment.get("recovery", ""),
-            "severity": treatment.get("severity", ""),
-            "predictions": prediction_details
+            "medicine": disease_info.get("medicine", ""),
+            "pesticide": disease_info.get("pesticide", ""),
+            "recovery": disease_info.get("recovery", ""),
+            "severity": disease_info.get("severity", "Low"),
+            "predictions": prediction_list
         })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/predict/yield", methods=["POST"])
+@app.route("/predict/yield", methods=["POST", "OPTIONS"])
 def predict_yield():
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+
     try:
         data = request.get_json()
 
@@ -237,20 +241,24 @@ def predict_yield():
         avg_temp = float(data.get("avg_temp", 28))
 
         try:
-            area_encoded = label_encoder.transform([country])[0]
-        except Exception:
-            area_encoded = label_encoder.transform(["India"])[0]
+            encoded_country = label_encoder.transform([country])[0]
+        except:
+            encoded_country = label_encoder.transform(["India"])[0]
 
-        features = np.array([
-            [area_encoded, year, rainfall, pesticides, avg_temp]
-        ])
+        features = np.array([[
+            encoded_country,
+            year,
+            rainfall,
+            pesticides,
+            avg_temp
+        ]])
 
-        predicted_yield = float(yield_model.predict(features)[0])
+        pred = float(yield_model.predict(features)[0])
 
         return jsonify({
-            "predictedYield": round(predicted_yield / 10000, 2),
-            "yieldCategory": get_yield_category(predicted_yield),
-            "confidence": round(yield_info["r2_score"] * 100, 2)
+            "predictedYield": round(pred / 10000, 2),
+            "yieldCategory": get_yield_category(pred),
+            "confidence": round(float(yield_info["r2_score"]) * 100, 2)
         })
 
     except Exception as e:
